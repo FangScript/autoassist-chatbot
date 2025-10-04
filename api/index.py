@@ -9,9 +9,6 @@ from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferWindowMemory
 from pinecone import Pinecone
 
-# Suppress Pydantic warning
-from pydantic import BaseModel
-
 # Load API keys from environment variables
 if not os.environ.get("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY environment variable is required")
@@ -36,7 +33,7 @@ GREETINGS = {
 }
 GREETING_KEYWORDS = ["hi", "hello", "hey", "greetings", "yo"]
 
-# Fallback service list (used if RAG context is insufficient)
+# Fallback service list
 FALLBACK_SERVICES = """
 <h3>Our Services</h3>
 <ul>
@@ -49,115 +46,97 @@ FALLBACK_SERVICES = """
 Check <a href='https://www.dpfspecialist.co.uk/our-services/' target='_blank'>our services</a> or <a href='https://www.instagram.com/dpf_specialist/' target='_blank'>Instagram</a> for more!
 """
 
-# Initialize Pinecone client
-print("Initializing Pinecone client for chatbot...")
-try:
-    pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
-    print("Pinecone client initialized successfully")
-except Exception as e:
-    print(f"Error initializing Pinecone client: {str(e)}")
-    exit(1)
+# Initialize components
+def initialize_components():
+    try:
+        # Initialize Pinecone client
+        pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
+        
+        # Initialize embeddings and LLM
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+        
+        # Connect to Pinecone vector store
+        vectorstore = PineconeVectorStore(
+            index_name=INDEX_NAME,
+            embedding=embeddings,
+            namespace=NAMESPACE
+        )
+        
+        # Conversation memory
+        memory = ConversationBufferWindowMemory(
+            memory_key="chat_history",
+            k=5,
+            return_messages=True,
+            output_key="answer"
+        )
+        
+        # Custom prompt
+        prompt_template = """
+        You're a chill, expert support agent for DPF Specialist, the go-to for diesel particulate filter fixes. Keep answers short (2-3 sentences), engaging, and use bullet points or headings for clarity. Use chat history to avoid repetitive answers and stay context-aware. Follow these rules:
 
-# Embeddings and LLM
-print("Initializing OpenAI embeddings and LLM...")
-try:
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
-    print("Embeddings and LLM initialized successfully")
-except Exception as e:
-    print(f"Error initializing OpenAI models: {str(e)}")
-    exit(1)
+        - **Tone**: Cool, friendly, professional.
+        - **Links**: Only include relevant links:
+          - For service/cleaning details: Use <a href='{SERVICES_URL}' target='_blank'>our services</a> and <a href='{INSTAGRAM_URL}' target='_blank'>Instagram</a>.
+          - For contact queries: Use <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> or <a href='mailto:{EMAIL}'>{EMAIL}</a>.
+          - For booking interest: Suggest <a href='{BOOKING_URL}' target='_blank'>book an appointment</a>.
+        - **Intent**:
+          - New customers (general queries, pricing, DPF basics): Suggest booking.
+          - Returning customers: Skip booking, offer help or contact info.
+        - **Specifics**:
+          - Avoid generic "visit our website" since users are on the site.
+          - For unknown info, say "I don't have that info" once; for repeated queries, suggest contact.
+          - For introductions, personalize the response.
+          - For service queries, use context; if insufficient, use this fallback: {FALLBACK_SERVICES}
 
-# Connect to Pinecone vector store
-print(f"Connecting to Pinecone index: {INDEX_NAME}")
-try:
-    vectorstore = PineconeVectorStore(
-        index_name=INDEX_NAME,
-        embedding=embeddings,
-        namespace=NAMESPACE
-    )
-    print(f"Connected to Pinecone index '{INDEX_NAME}' in namespace '{NAMESPACE}'")
-except Exception as e:
-    print(f"Error connecting to Pinecone vector store: {str(e)}")
-    exit(1)
+        **Chat History**: {chat_history}
+        **Context**: {context}
+        **User Query**: {question}
 
-# Conversation memory
-memory = ConversationBufferWindowMemory(
-    memory_key="chat_history",
-    k=5,  # Keep last 5 exchanges
-    return_messages=True,
-    output_key="answer"
-)
+        Answer concisely with relevant links only. Use HTML for formatting.
+        """
 
-# Custom prompt
-prompt_template = """
-You're a chill, expert support agent for DPF Specialist, the go-to for diesel particulate filter fixes. Keep answers short (2-3 sentences), engaging, and use bullet points or headings for clarity. Use chat history to avoid repetitive answers and stay context-aware. Follow these rules:
+        PROMPT = PromptTemplate(
+            template=prompt_template,
+            input_variables=["chat_history", "context", "question"],
+            partial_variables={
+                "SERVICES_URL": SERVICES_URL,
+                "BOOKING_URL": BOOKING_URL,
+                "PHONE_NUMBER": PHONE_NUMBER,
+                "INSTAGRAM_URL": INSTAGRAM_URL,
+                "EMAIL": EMAIL,
+                "FALLBACK_SERVICES": FALLBACK_SERVICES
+            }
+        )
 
-- **Tone**: Cool, friendly, professional.
-- **Links**: Only include relevant links:
-  - For service/cleaning details (e.g., "what services," "how do you clean"): Use <a href='{SERVICES_URL}' target='_blank'>our services</a> and <a href='{INSTAGRAM_URL}' target='_blank'>Instagram</a>.
-  - For contact queries: Use <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> or <a href='mailto:{EMAIL}'>{EMAIL}</a>.
-  - For booking interest (new customers, e.g., general DPF questions): Suggest <a href='{BOOKING_URL}' target='_blank'>book an appointment</a>.
-- **Intent**:
-  - New customers (general queries, pricing, DPF basics): Suggest booking.
-  - Returning customers (mention past services, issues): Skip booking, offer help or contact info.
-- **Specifics**:
-  - Avoid generic "visit our website" since users are on the site.
-  - For unknown info (e.g., location, hours), say "I don't have that info" once; for repeated queries, suggest contact without repeating.
-  - For introductions (e.g., "my name is X"), personalize the response.
-  - For service queries, use context; if insufficient, use this fallback: {FALLBACK_SERVICES}
-  - Don't repeat service lists unless explicitly asked.
+        # Conversational RAG chain
+        qa_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
+            memory=memory,
+            combine_docs_chain_kwargs={"prompt": PROMPT},
+            return_source_documents=True
+        )
+        
+        return qa_chain, memory
+        
+    except Exception as e:
+        print(f"Error initializing components: {str(e)}")
+        return None, None
 
-**Chat History**: {chat_history}
-**Context**: {context}
-**User Query**: {question}
+# Initialize components
+qa_chain, memory = initialize_components()
 
-Answer concisely with relevant links only. Use HTML for formatting (e.g., <h3> for headings, <ul><li> for lists, <strong> for bold). Debug: Log retrieved context for analysis.
-"""
-
-PROMPT = PromptTemplate(
-    template=prompt_template,
-    input_variables=["chat_history", "context", "question"],
-    partial_variables={
-        "SERVICES_URL": SERVICES_URL,
-        "BOOKING_URL": BOOKING_URL,
-        "PHONE_NUMBER": PHONE_NUMBER,
-        "INSTAGRAM_URL": INSTAGRAM_URL,
-        "EMAIL": EMAIL,
-        "FALLBACK_SERVICES": FALLBACK_SERVICES
-    }
-)
-
-# Conversational RAG chain
-print("Setting up ConversationalRetrievalChain...")
-try:
-    qa_chain = ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-        memory=memory,
-        combine_docs_chain_kwargs={"prompt": PROMPT},
-        return_source_documents=True  # Return source docs for debugging
-    )
-    print("ConversationalRetrievalChain set up successfully")
-except Exception as e:
-    print(f"Error setting up ConversationalRetrievalChain: {str(e)}")
-    exit(1)
-
-# HTML template for the chat interface
+# HTML template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DPF Specialist Chatbot Widget</title>
+    <title>DPF Specialist Chatbot</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%);
@@ -166,8 +145,6 @@ HTML_TEMPLATE = """
             align-items: center;
             justify-content: center;
         }
-
-        /* Chat Widget Button */
         .chat-widget-btn {
             position: fixed;
             bottom: 30px;
@@ -185,50 +162,8 @@ HTML_TEMPLATE = """
             transition: all 0.3s ease;
             z-index: 1000;
         }
-
-        .chat-widget-btn:hover {
-            transform: scale(1.1);
-            box-shadow: 0 6px 25px rgba(255, 119, 51, 0.6);
-        }
-
-        .chat-widget-btn svg {
-            width: 30px;
-            height: 30px;
-            fill: white;
-        }
-
-        .chat-widget-btn.active {
-            background: #1a1a1a;
-        }
-
-        /* Notification Badge */
-        .notification-badge {
-            position: absolute;
-            top: -5px;
-            right: -5px;
-            background: #ff3333;
-            color: white;
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            font-size: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% {
-                transform: scale(1);
-            }
-            50% {
-                transform: scale(1.1);
-            }
-        }
-
-        /* Chat Container */
+        .chat-widget-btn:hover { transform: scale(1.1); }
+        .chat-widget-btn svg { width: 30px; height: 30px; fill: white; }
         .chat-container {
             position: fixed;
             bottom: 100px;
@@ -242,25 +177,8 @@ HTML_TEMPLATE = """
             flex-direction: column;
             overflow: hidden;
             z-index: 999;
-            animation: slideUp 0.3s ease;
         }
-
-        .chat-container.active {
-            display: flex;
-        }
-
-        @keyframes slideUp {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        /* Chat Header */
+        .chat-container.active { display: flex; }
         .chat-header {
             background: linear-gradient(135deg, #ff9966 0%, #F09301 100%);
             color: white;
@@ -269,7 +187,6 @@ HTML_TEMPLATE = """
             align-items: center;
             gap: 15px;
         }
-
         .bot-avatar {
             width: 45px;
             height: 45px;
@@ -282,26 +199,9 @@ HTML_TEMPLATE = """
             flex-shrink: 0;
             border: 2px solid #1a1a1a;
         }
-
-        .bot-avatar img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .chat-header-info h3 {
-            font-size: 18px;
-            margin-bottom: 3px;
-        }
-
-        .status {
-            font-size: 13px;
-            opacity: 0.9;
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-
+        .bot-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .chat-header-info h3 { font-size: 18px; margin-bottom: 3px; }
+        .status { font-size: 13px; opacity: 0.9; display: flex; align-items: center; gap: 5px; }
         .status-dot {
             width: 8px;
             height: 8px;
@@ -309,25 +209,13 @@ HTML_TEMPLATE = """
             border-radius: 50%;
             animation: blink 2s infinite;
         }
-
-        @keyframes blink {
-            0%, 100% {
-                opacity: 1;
-            }
-            50% {
-                opacity: 0.5;
-            }
-        }
-
-        /* Chat Messages */
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
         .chat-messages {
             flex: 1;
             padding: 20px;
             overflow-y: auto;
             background: #fafafa;
         }
-
-        /* Welcome Screen */
         .welcome-screen {
             display: flex;
             flex-direction: column;
@@ -335,84 +223,7 @@ HTML_TEMPLATE = """
             justify-content: center;
             height: 100%;
             gap: 30px;
-            animation: fadeInUp 0.6s ease;
         }
-
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .logo-container {
-            animation: logoFadeIn 0.6s ease;
-            position: relative;
-        }
-
-        @keyframes logoFadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .chat-logo {
-            max-width: 280px;
-            height: auto;
-            filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.08));
-        }
-
-        .welcome-message {
-            text-align: center;
-            animation: slideInBottom 0.8s ease 0.3s both;
-        }
-
-        @keyframes slideInBottom {
-            from {
-                opacity: 0;
-                transform: translateY(20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .bot-icon-large {
-            width: 80px;
-            height: 80px;
-            margin: 0 auto 15px;
-            animation: fadeInSimple 0.8s ease 0.6s both;
-            border: 3px solid #1a1a1a;
-            border-radius: 50%;
-            overflow: hidden;
-            background: white;
-        }
-
-        .bot-icon-large img {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-        }
-
-        @keyframes fadeInSimple {
-            from {
-                opacity: 0;
-            }
-            to {
-                opacity: 1;
-            }
-        }
-
         .welcome-text {
             background: white;
             padding: 20px 25px;
@@ -421,48 +232,15 @@ HTML_TEMPLATE = """
             max-width: 280px;
             font-size: 15px;
             line-height: 1.6;
-            position: relative;
+            text-align: center;
         }
-
-        .welcome-text::before {
-            content: '';
-            position: absolute;
-            top: -8px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 0;
-            height: 0;
-            border-left: 10px solid transparent;
-            border-right: 10px solid transparent;
-            border-bottom: 10px solid white;
-        }
-
         .message {
             margin-bottom: 15px;
             animation: fadeIn 0.3s ease;
         }
-
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .message.bot {
-            display: flex;
-            gap: 10px;
-        }
-
-        .message.user {
-            display: flex;
-            justify-content: flex-end;
-        }
-
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .message.bot { display: flex; gap: 10px; }
+        .message.user { display: flex; justify-content: flex-end; }
         .message-avatar {
             width: 32px;
             height: 32px;
@@ -475,13 +253,7 @@ HTML_TEMPLATE = """
             overflow: hidden;
             border: 2px solid #1a1a1a;
         }
-
-        .message-avatar img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
+        .message-avatar img { width: 100%; height: 100%; object-fit: cover; }
         .message-content {
             background: white;
             padding: 12px 16px;
@@ -489,45 +261,13 @@ HTML_TEMPLATE = """
             max-width: 70%;
             box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
         }
-
-        .message.user .message-content {
-            background: #1a1a1a;
-            color: white;
-        }
-
-        /* Markdown Rendering Styles */
-        .message-content h5 {
-            margin: 0 0 10px;
-            font-size: 1.1em;
-            color: #2c3e50;
-        }
-        .message-content ul {
-            margin: 5px 0;
-            padding-left: 20px;
-            list-style-type: disc;
-        }
-        .message-content li {
-            margin-bottom: 5px;
-        }
-        .message-content strong {
-            font-weight: 600;
-            color: #ff7733;
-        }
-        .message-content br {
-            line-height: 1.2;
-        }
-
-        /* Typing Indicator */
-        .typing-indicator {
-            display: none;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
-
-        .typing-indicator.active {
-            display: flex;
-        }
-
+        .message.user .message-content { background: #1a1a1a; color: white; }
+        .message-content h5 { margin: 0 0 10px; font-size: 1.1em; color: #2c3e50; }
+        .message-content ul { margin: 5px 0; padding-left: 20px; list-style-type: disc; }
+        .message-content li { margin-bottom: 5px; }
+        .message-content strong { font-weight: 600; color: #ff7733; }
+        .typing-indicator { display: none; gap: 10px; margin-bottom: 15px; }
+        .typing-indicator.active { display: flex; }
         .typing-dots {
             background: white;
             padding: 12px 16px;
@@ -536,7 +276,6 @@ HTML_TEMPLATE = """
             gap: 5px;
             box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
         }
-
         .typing-dot {
             width: 8px;
             height: 8px;
@@ -544,25 +283,9 @@ HTML_TEMPLATE = """
             border-radius: 50%;
             animation: typing 1.4s infinite;
         }
-
-        .typing-dot:nth-child(2) {
-            animation-delay: 0.2s;
-        }
-
-        .typing-dot:nth-child(3) {
-            animation-delay: 0.4s;
-        }
-
-        @keyframes typing {
-            0%, 60%, 100% {
-                transform: translateY(0);
-            }
-            30% {
-                transform: translateY(-10px);
-            }
-        }
-
-        /* Chat Input */
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes typing { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-10px); } }
         .chat-input {
             padding: 20px;
             background: white;
@@ -570,7 +293,6 @@ HTML_TEMPLATE = """
             display: flex;
             gap: 10px;
         }
-
         .chat-input input {
             flex: 1;
             padding: 12px 16px;
@@ -580,11 +302,7 @@ HTML_TEMPLATE = """
             font-size: 14px;
             transition: border-color 0.3s;
         }
-
-        .chat-input input:focus {
-            border-color: #ff7733;
-        }
-
+        .chat-input input:focus { border-color: #ff7733; }
         .send-btn {
             width: 45px;
             height: 45px;
@@ -597,48 +315,18 @@ HTML_TEMPLATE = """
             justify-content: center;
             transition: transform 0.2s;
         }
-
-        .send-btn:hover:not(:disabled) {
-            transform: scale(1.1);
-        }
-
-        .send-btn:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        .send-btn svg {
-            width: 20px;
-            height: 20px;
-            fill: white;
-        }
-
-        /* Scrollbar */
-        .chat-messages::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        .chat-messages::-webkit-scrollbar-track {
-            background: #f1f1f1;
-        }
-
-        .chat-messages::-webkit-scrollbar-thumb {
-            background: #ff7733;
-            border-radius: 3px;
-        }
-
+        .send-btn:hover:not(:disabled) { transform: scale(1.1); }
+        .send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .send-btn svg { width: 20px; height: 20px; fill: white; }
+        .chat-messages::-webkit-scrollbar { width: 6px; }
+        .chat-messages::-webkit-scrollbar-track { background: #f1f1f1; }
+        .chat-messages::-webkit-scrollbar-thumb { background: #ff7733; border-radius: 3px; }
         @media (max-width: 400px) {
-            .chat-container {
-                width: calc(100vw - 60px);
-                height: calc(100vh - 120px);
-                bottom: 60px;
-                right: 30px;
-            }
+            .chat-container { width: calc(100vw - 60px); height: calc(100vh - 120px); bottom: 60px; right: 30px; }
         }
     </style>
 </head>
 <body>
-    <!-- Chat Widget Button -->
     <button class="chat-widget-btn" id="chatBtn">
         <svg viewBox="0 0 24 24" id="chatIcon">
             <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/>
@@ -646,10 +334,8 @@ HTML_TEMPLATE = """
         <svg viewBox="0 0 24 24" id="closeIcon" style="display: none;">
             <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
         </svg>
-        <span class="notification-badge">1</span>
     </button>
 
-    <!-- Chat Container -->
     <div class="chat-container" id="chatContainer">
         <div class="chat-header">
             <div class="bot-avatar">
@@ -666,16 +352,8 @@ HTML_TEMPLATE = """
 
         <div class="chat-messages" id="chatMessages">
             <div class="welcome-screen" id="welcomeScreen">
-                <div class="logo-container">
-                    <img src="/static/image.png" alt="DPF Specialist" class="chat-logo">
-                </div>
-                <div class="welcome-message">
-                    <div class="bot-icon-large">
-                        <img src="/static/logo2.jpg" alt="Bot">
-                    </div>
-                    <div class="welcome-text">
-                        Yo! Welcome to DPF Specialist! 😎 What's on your mind? Ask about DPF fixes, call us at <a href='tel:0330 029 9561'>0330 029 9561</a>, or check out <a href='https://www.dpfspecialist.co.uk/our-services/' target='_blank'>our services</a>!
-                    </div>
+                <div class="welcome-text">
+                    Yo! Welcome to DPF Specialist! 😎 What's on your mind? Ask about DPF fixes, call us at <a href='tel:0330 029 9561'>0330 029 9561</a>, or check out <a href='https://www.dpfspecialist.co.uk/our-services/' target='_blank'>our services</a>!
                 </div>
             </div>
         </div>
@@ -709,25 +387,18 @@ HTML_TEMPLATE = """
         const sendBtn = document.getElementById('sendBtn');
         const chatIcon = document.getElementById('chatIcon');
         const closeIcon = document.getElementById('closeIcon');
-        const notificationBadge = document.querySelector('.notification-badge');
         const typingIndicator = document.getElementById('typingIndicator');
         const welcomeScreen = document.getElementById('welcomeScreen');
 
-        // Parse Markdown-like syntax to HTML
         function parseMarkdown(text) {
-            // Convert ### to <h5>
-            text = text.replace(/^###\s*(.+)$/gm, '<h5>$1</h5>');
-            // Convert **text** to <strong>text</strong>
-            text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            // Convert - item to <ul><li>item</li></ul>
+            text = text.replace(/^###\\s*(.+)$/gm, '<h5>$1</h5>');
+            text = text.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
             text = text.replace(/^- (.+)$/gm, '<li>$1</li>');
-            text = text.replace(/(<li>.+<\/li>)/g, '<ul>$1</ul>');
-            // Convert newlines to <br> (except within lists)
-            text = text.replace(/\\n(?!(<ul>|<\/ul>|<li>))/g, '<br>');
+            text = text.replace(/(<li>.+<\\/li>)/g, '<ul>$1</ul>');
+            text = text.replace(/\\n(?!(<ul>|<\\/ul>|<li>))/g, '<br>');
             return text;
         }
 
-        // Toggle chat
         chatBtn.addEventListener('click', () => {
             chatContainer.classList.toggle('active');
             chatBtn.classList.toggle('active');
@@ -735,7 +406,6 @@ HTML_TEMPLATE = """
             if (chatContainer.classList.contains('active')) {
                 chatIcon.style.display = 'none';
                 closeIcon.style.display = 'block';
-                notificationBadge.style.display = 'none';
                 messageInput.focus();
             } else {
                 chatIcon.style.display = 'block';
@@ -743,22 +413,18 @@ HTML_TEMPLATE = """
             }
         });
 
-        // Send message to backend
         async function sendMessage() {
             const message = messageInput.value.trim();
             if (message === '') return;
 
-            // Hide welcome screen on first message
             if (welcomeScreen) {
                 welcomeScreen.style.display = 'none';
             }
 
-            // Add user message
             addMessage(message, 'user');
             messageInput.value = '';
             sendBtn.disabled = true;
 
-            // Show typing indicator
             typingIndicator.classList.add('active');
             chatMessages.scrollTop = chatMessages.scrollHeight;
 
@@ -775,11 +441,8 @@ HTML_TEMPLATE = """
 
                 const data = await response.json();
                 let botResponse = data.response || 'No response received.';
-
-                // Replace old phone number with new one in bot response
                 botResponse = botResponse.replace(/0330 162 8424/g, '0330 029 9561');
 
-                // Hide typing indicator and add bot message
                 typingIndicator.classList.remove('active');
                 addMessage(botResponse, 'bot');
             } catch (error) {
@@ -791,13 +454,11 @@ HTML_TEMPLATE = """
             }
         }
 
-        // Add message to chat
         function addMessage(text, sender) {
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${sender}`;
 
             if (sender === 'bot') {
-                // Parse Markdown for bot responses
                 const parsedText = parseMarkdown(text);
                 messageDiv.innerHTML = `
                     <div class="message-avatar">
@@ -806,16 +467,13 @@ HTML_TEMPLATE = """
                     <div class="message-content">${parsedText}</div>
                 `;
             } else {
-                messageDiv.innerHTML = `
-                    <div class="message-content">${text}</div>
-                `;
+                messageDiv.innerHTML = `<div class="message-content">${text}</div>`;
             }
 
             chatMessages.appendChild(messageDiv);
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
-        // Event listeners
         sendBtn.addEventListener('click', sendMessage);
         messageInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
@@ -823,15 +481,9 @@ HTML_TEMPLATE = """
             }
         });
 
-        // Enable send button when typing
         messageInput.addEventListener('input', () => {
             sendBtn.disabled = messageInput.value.trim() === '';
         });
-
-        // Initial notification badge (remove after first open)
-        setTimeout(() => {
-            notificationBadge.style.display = 'none';
-        }, 5000); // Hide after 5 seconds or on open
     </script>
 </body>
 </html>
@@ -845,6 +497,9 @@ def index():
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    if not qa_chain or not memory:
+        return jsonify({"response": "Service temporarily unavailable. Please try again later."}), 500
+    
     user_message = request.json.get("message")
     if not user_message:
         return jsonify({"response": f"Oops, type something! 😎 Need DPF help? Check <a href='{SERVICES_URL}' target='_blank'>our services</a> or hit us up at <a href='mailto:{EMAIL}'>{EMAIL}</a>."}), 400
@@ -875,8 +530,6 @@ def chat():
     try:
         result = qa_chain.invoke({"question": user_message})
         response = result["answer"]
-        # Debug: Log retrieved context
-        print(f"Retrieved context: {[doc.page_content for doc in result['source_documents']]}")
         print(f"Generated RAG response: {response}")
         return jsonify({"response": response})
     except Exception as e:
