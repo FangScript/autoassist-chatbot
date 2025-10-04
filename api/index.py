@@ -1,23 +1,14 @@
 import os
-import re
 import json
-from flask import Flask, request, jsonify, render_template_string
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_pinecone import PineconeVectorStore
-from langchain.chains import ConversationalRetrievalChain
-from langchain.prompts import PromptTemplate
-from langchain.memory import ConversationBufferWindowMemory
-from pinecone import Pinecone
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import re
 
 # Load API keys from environment variables
 if not os.environ.get("OPENAI_API_KEY"):
     raise ValueError("OPENAI_API_KEY environment variable is required")
 if not os.environ.get("PINECONE_API_KEY"):
     raise ValueError("PINECONE_API_KEY environment variable is required")
-
-# Pinecone index details
-INDEX_NAME = "dpf-chatbot"
-NAMESPACE = "qa-namespace"
 
 # Hardcoded data
 SERVICES_URL = "https://www.dpfspecialist.co.uk/our-services/"
@@ -46,86 +37,39 @@ FALLBACK_SERVICES = """
 Check <a href='https://www.dpfspecialist.co.uk/our-services/' target='_blank'>our services</a> or <a href='https://www.instagram.com/dpf_specialist/' target='_blank'>Instagram</a> for more!
 """
 
-# Initialize components
-def initialize_components():
-    try:
-        # Initialize Pinecone client
-        pc = Pinecone(api_key=os.environ["PINECONE_API_KEY"])
-        
-        # Initialize embeddings and LLM
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small", dimensions=1536)
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
-        
-        # Connect to Pinecone vector store
-        vectorstore = PineconeVectorStore(
-            index_name=INDEX_NAME,
-            embedding=embeddings,
-            namespace=NAMESPACE
-        )
-        
-        # Conversation memory
-        memory = ConversationBufferWindowMemory(
-            memory_key="chat_history",
-            k=5,
-            return_messages=True,
-            output_key="answer"
-        )
-        
-        # Custom prompt
-        prompt_template = """
-        You're a chill, expert support agent for DPF Specialist, the go-to for diesel particulate filter fixes. Keep answers short (2-3 sentences), engaging, and use bullet points or headings for clarity. Use chat history to avoid repetitive answers and stay context-aware. Follow these rules:
-
-        - **Tone**: Cool, friendly, professional.
-        - **Links**: Only include relevant links:
-          - For service/cleaning details: Use <a href='{SERVICES_URL}' target='_blank'>our services</a> and <a href='{INSTAGRAM_URL}' target='_blank'>Instagram</a>.
-          - For contact queries: Use <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> or <a href='mailto:{EMAIL}'>{EMAIL}</a>.
-          - For booking interest: Suggest <a href='{BOOKING_URL}' target='_blank'>book an appointment</a>.
-        - **Intent**:
-          - New customers (general queries, pricing, DPF basics): Suggest booking.
-          - Returning customers: Skip booking, offer help or contact info.
-        - **Specifics**:
-          - Avoid generic "visit our website" since users are on the site.
-          - For unknown info, say "I don't have that info" once; for repeated queries, suggest contact.
-          - For introductions, personalize the response.
-          - For service queries, use context; if insufficient, use this fallback: {FALLBACK_SERVICES}
-
-        **Chat History**: {chat_history}
-        **Context**: {context}
-        **User Query**: {question}
-
-        Answer concisely with relevant links only. Use HTML for formatting.
-        """
-
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["chat_history", "context", "question"],
-            partial_variables={
-                "SERVICES_URL": SERVICES_URL,
-                "BOOKING_URL": BOOKING_URL,
-                "PHONE_NUMBER": PHONE_NUMBER,
-                "INSTAGRAM_URL": INSTAGRAM_URL,
-                "EMAIL": EMAIL,
-                "FALLBACK_SERVICES": FALLBACK_SERVICES
-            }
-        )
-
-        # Conversational RAG chain
-        qa_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm,
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
-            memory=memory,
-            combine_docs_chain_kwargs={"prompt": PROMPT},
-            return_source_documents=True
-        )
-        
-        return qa_chain, memory
-        
-    except Exception as e:
-        print(f"Error initializing components: {str(e)}")
-        return None, None
-
-# Initialize components
-qa_chain, memory = initialize_components()
+# Simple response generator (without LangChain for now)
+def generate_response(user_message):
+    user_message_lower = user_message.lower().strip()
+    
+    # Check for greetings
+    for keyword in GREETING_KEYWORDS:
+        if re.fullmatch(rf"{keyword}[\s!?]*", user_message_lower):
+            return GREETINGS.get(keyword, GREETINGS["hi"])
+    
+    # Handle introductions
+    name_match = re.search(r"(?:my name is|im|i'm)\s+([a-zA-Z]+)", user_message_lower, re.IGNORECASE)
+    if name_match:
+        name = name_match.group(1).capitalize()
+        return f"Nice to meet you, {name}! 😎 How can I help with your DPF needs? Check <a href='{SERVICES_URL}' target='_blank'>our services</a> or ask away!"
+    
+    # Handle common DPF queries
+    if any(word in user_message_lower for word in ["dpf", "diesel", "filter", "particulate"]):
+        return f"Great question about DPF systems! 🔧 We specialize in DPF cleaning, regeneration, and replacement. Check out <a href='{SERVICES_URL}' target='_blank'>our services</a> or <a href='{BOOKING_URL}' target='_blank'>book an appointment</a> for expert help!"
+    
+    if any(word in user_message_lower for word in ["clean", "cleaning", "service"]):
+        return f"Our DPF cleaning service is top-notch! 🧽 We use professional equipment and techniques. <a href='{BOOKING_URL}' target='_blank'>Book your service</a> or call us at <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> for more info!"
+    
+    if any(word in user_message_lower for word in ["price", "cost", "how much"]):
+        return f"Pricing varies based on your specific DPF needs! 💰 For accurate quotes, <a href='{BOOKING_URL}' target='_blank'>book a consultation</a> or call <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a>. We offer competitive rates!"
+    
+    if any(word in user_message_lower for word in ["location", "where", "address"]):
+        return f"We're located in the UK and serve customers nationwide! 📍 For specific location details, call <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> or email <a href='mailto:{EMAIL}'>{EMAIL}</a>."
+    
+    if any(word in user_message_lower for word in ["contact", "phone", "call"]):
+        return f"Get in touch! 📞 Call <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> or email <a href='mailto:{EMAIL}'>{EMAIL}</a>. We're here to help with all your DPF needs!"
+    
+    # Default response
+    return f"Thanks for reaching out! 😊 I'm here to help with DPF questions. Check <a href='{SERVICES_URL}' target='_blank'>our services</a>, <a href='{BOOKING_URL}' target='_blank'>book an appointment</a>, or call <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> for expert assistance!"
 
 # HTML template
 HTML_TEMPLATE = """
@@ -489,57 +433,42 @@ HTML_TEMPLATE = """
 </html>
 """
 
-app = Flask(__name__)
-
-@app.route("/")
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    if not qa_chain or not memory:
-        return jsonify({"response": "Service temporarily unavailable. Please try again later."}), 500
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(HTML_TEMPLATE.encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
     
-    user_message = request.json.get("message")
-    if not user_message:
-        return jsonify({"response": f"Oops, type something! 😎 Need DPF help? Check <a href='{SERVICES_URL}' target='_blank'>our services</a> or hit us up at <a href='mailto:{EMAIL}'>{EMAIL}</a>."}), 400
-    
-    print(f"Processing user query: {user_message}")
-    
-    # Stricter greeting check
-    user_message_lower = user_message.lower().strip()
-    for keyword in GREETING_KEYWORDS:
-        if re.fullmatch(rf"{keyword}[\s!?]*", user_message_lower):
-            response = GREETINGS.get(keyword, GREETINGS["hi"])
-            print(f"Hardcoded greeting response: {response}")
-            memory.chat_memory.add_user_message(user_message)
-            memory.chat_memory.add_ai_message(response)
-            return jsonify({"response": response})
-    
-    # Handle introductions
-    name_match = re.search(r"(?:my name is|im|i'm)\s+([a-zA-Z]+)", user_message_lower, re.IGNORECASE)
-    if name_match:
-        name = name_match.group(1).capitalize()
-        response = f"Nice to meet you, {name}! 😎 How can I help with your DPF needs? Check <a href='{SERVICES_URL}' target='_blank'>our services</a> or ask away!"
-        print(f"Introduction response: {response}")
-        memory.chat_memory.add_user_message(user_message)
-        memory.chat_memory.add_ai_message(response)
-        return jsonify({"response": response})
-
-    # RAG for other queries
-    try:
-        result = qa_chain.invoke({"question": user_message})
-        response = result["answer"]
-        print(f"Generated RAG response: {response}")
-        return jsonify({"response": response})
-    except Exception as e:
-        print(f"Error processing query: {str(e)}")
-        return jsonify({"response": f"Whoa, something broke! 😅 Try again or reach out at <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> or <a href='mailto:{EMAIL}'>{EMAIL}</a>."}), 500
-
-# Vercel serverless function handler
-def handler(request):
-    return app(request.environ, lambda *args: None)
-
-# For local development
-if __name__ == "__main__":
-    app.run(debug=True)
+    def do_POST(self):
+        if self.path == '/chat':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            
+            try:
+                data = json.loads(post_data.decode('utf-8'))
+                user_message = data.get('message', '')
+                
+                if not user_message:
+                    response = f"Oops, type something! 😎 Need DPF help? Check <a href='{SERVICES_URL}' target='_blank'>our services</a> or hit us up at <a href='mailto:{EMAIL}'>{EMAIL}</a>."
+                else:
+                    response = generate_response(user_message)
+                
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'response': response}).encode())
+                
+            except Exception as e:
+                print(f"Error processing chat request: {str(e)}")
+                self.send_response(500)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'response': f"Whoa, something broke! 😅 Try again or reach out at <a href='tel:{PHONE_NUMBER}'>{PHONE_NUMBER}</a> or <a href='mailto:{EMAIL}'>{EMAIL}</a>."}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
