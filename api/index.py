@@ -144,6 +144,9 @@ HTML_TEMPLATE = """
             border: 2px solid #1a1a1a;
         }
         .bot-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .bot-avatar { background: linear-gradient(135deg, #ff9966 0%, #ff7733 100%); }
+        .message-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .message-avatar { background: linear-gradient(135deg, #ff9966 0%, #ff7733 100%); }
         .chat-header-info h3 { font-size: 18px; margin-bottom: 3px; }
         .status { font-size: 13px; opacity: 0.9; display: flex; align-items: center; gap: 5px; }
         .status-dot {
@@ -283,7 +286,7 @@ HTML_TEMPLATE = """
     <div class="chat-container" id="chatContainer">
         <div class="chat-header">
             <div class="bot-avatar">
-                <img src="/static/logo2.jpg" alt="Support">
+                <img src="/static/logo2.jpg" alt="Support" onerror="this.style.display='none'; this.parentElement.innerHTML='🤖';">
             </div>
             <div class="chat-header-info">
                 <h3>DPF Specialist Bot</h3>
@@ -304,7 +307,7 @@ HTML_TEMPLATE = """
 
         <div class="typing-indicator" id="typingIndicator">
             <div class="message-avatar">
-                <img src="/static/logo2.jpg" alt="Bot">
+                <img src="/static/logo2.jpg" alt="Bot" onerror="this.style.display='none'; this.parentElement.innerHTML='🤖';">
             </div>
             <div class="typing-dots">
                 <div class="typing-dot"></div>
@@ -406,7 +409,7 @@ HTML_TEMPLATE = """
                 const parsedText = parseMarkdown(text);
                 messageDiv.innerHTML = `
                     <div class="message-avatar">
-                        <img src="/static/logo2.jpg" alt="Bot">
+                        <img src="/static/logo2.jpg" alt="Bot" onerror="this.style.display='none'; this.parentElement.innerHTML='🤖';">
                     </div>
                     <div class="message-content">${parsedText}</div>
                 `;
@@ -440,6 +443,10 @@ class handler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/html')
             self.end_headers()
             self.wfile.write(HTML_TEMPLATE.encode())
+        elif self.path.startswith('/static/'):
+            # Let Vercel handle static files
+            self.send_response(404)
+            self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()
