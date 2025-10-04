@@ -1,0 +1,21 @@
+# Exclude from Vercel deployment
+dataset/
+faiss_index/
+embeddings.py
+app.py
+.git/
+.gitignore
+.vercelignore
+*.log
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
