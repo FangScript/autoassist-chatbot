@@ -171,6 +171,8 @@ HTML_TEMPLATE = """
             height: 100%;
             gap: 30px;
         }
+        .logo-container { margin-bottom: 20px; }
+        .chat-logo { max-width: 200px; height: auto; border-radius: 10px; }
         .welcome-text {
             background: white;
             padding: 20px 25px;
@@ -299,6 +301,9 @@ HTML_TEMPLATE = """
 
         <div class="chat-messages" id="chatMessages">
             <div class="welcome-screen" id="welcomeScreen">
+                <div class="logo-container">
+                    <img src="/static/image.png" alt="DPF Specialist" class="chat-logo" onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;font-size:24px;font-weight:bold;color:#ff7733;&quot;>DPF SPECIALIST</div>';">
+                </div>
                 <div class="welcome-text">
                     Yo! Welcome to DPF Specialist! 😎 What's on your mind? Ask about DPF fixes, call us at <a href='tel:0330 029 9561'>0330 029 9561</a>, or check out <a href='https://www.dpfspecialist.co.uk/our-services/' target='_blank'>our services</a>!
                 </div>
