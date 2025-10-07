@@ -16,4 +16,4 @@ PyYAML==6.0.2
 numpy==2.2.1
 python-dotenv==1.0.1
 pinecone==5.3.1
-langchain-pinecone==0.1.7
+langchain-pinecone==0.2.12
