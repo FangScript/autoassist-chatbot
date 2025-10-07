@@ -1,0 +1,22 @@
+# Environment files
+.env
+.env.*
+.vercel
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# OS/files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+.vercel
